@@ -1,0 +1,80 @@
+# ══════════════════════════════════════════════════════════════
+#  Authelia 基础配置（策略部分）
+#
+#  ✅ 这个文件【可以提交】，不含你的域名/密钥/用户
+#  ⛔ 生成的 authelia/configuration.yml 才是 Authelia 实际读的
+#     由 scripts/apply-config.sh（内部调 admin/generate_config.py）生成
+#
+#  这里定义"策略"，环境相关的（domain、access_control、session cookies）
+#  由 services.yml 注入。
+# ══════════════════════════════════════════════════════════════
+
+theme: 'auto'
+
+# ── 服务监听（只在容器内，对外由 Caddy 转发）────────────────
+server:
+  address: 'tcp://0.0.0.0:9091'
+  endpoints:
+    authz:
+      forward-auth:
+        implementation: 'ForwardAuth'
+
+# ── 日志 ────────────────────────────────────────────────────
+log:
+  level: 'info'
+  format: 'text'
+
+# ── 关闭遥测 ────────────────────────────────────────────────
+telemetry:
+  metrics:
+    enabled: false
+
+# ── 双因素认证：关闭 ───────────────────────────────────────
+# 本项目不使用 2FA：
+#   · 管理页只监听局域网，用独立的管理密码保护
+#   · 普通用户（users 组）只需要账号密码登录
+totp:
+  disable: true
+  issuer: 'nas-gateway'
+  period: 30
+  skew: 1
+
+# ── 用户库（file 后端，watch=true 时改文件会自动重载）────────
+authentication_backend:
+  file:
+    path: '/config/users_database.yml'
+    watch: true
+    password:
+      algorithm: 'argon2id'
+      argon2:
+        variant: 'argon2id'
+        iterations: 3
+        memory: 65536
+        parallelism: 4
+        key_length: 32
+        salt_length: 16
+
+# ── 会话 ────────────────────────────────────────────────────
+# cookies 段由生成器填充（需要域名）
+session:
+  name: 'nas_gateway_session'
+  same_site: 'lax'
+  expiration: '30d'      # 最长 30 天
+  inactivity: '7d'       # 7 天不活动就过期
+  remember_me: '30d'     # 勾"记住我"后 30 天
+
+# ── 登录限流（防暴力破解）──────────────────────────────────
+regulation:
+  max_retries: 5         # 5 次失败
+  find_time: '2m'        # 在 2 分钟内
+  ban_time: '15m'        # 封禁 15 分钟
+
+# ── 会话/2FA 状态存储（sqlite，持久化在 ./authelia/db.sqlite3）──
+storage:
+  local:
+    path: '/config/db.sqlite3'
+
+# ── 通知：写文件（不依赖邮件服务器）──────────────────────────
+notifier:
+  filesystem:
+    filename: '/config/notification.txt'

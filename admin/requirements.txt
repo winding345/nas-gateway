@@ -1,0 +1,6 @@
+# 用户管理页 / 配置生成器 的依赖
+#
+# argon2-cffi —— 生成 Authelia 兼容的 argon2id 哈希（与 base.yml 里的参数一致）
+# PyYAML      —— 读写 users_database.yml、生成 Authelia/Caddy 配置
+argon2-cffi>=23.1.0
+PyYAML>=6.0.1

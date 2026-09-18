@@ -1,0 +1,89 @@
+# ══════════════════════════════════════════════════════════════
+#  nas-gateway —— 主配置文件（模板）
+#
+#  用法：
+#     cp services.yml.example services.yml
+#     编辑 services.yml（填你的域名、服务列表）
+#     ./scripts/apply-config.sh        # 生成 Caddyfile / Authelia 配置 / 黄页
+#
+#  ⚠️ services.yml 已加入 .gitignore，不会提交到仓库
+# ══════════════════════════════════════════════════════════════
+
+# ── 你的公网域名 ────────────────────────────────────────────
+# Tailscale Funnel 提供的地址（不带 https:// 和结尾斜杠）
+# 查询： tailscale status --json | grep -i dnsname
+domain: "REPLACE-ME.ts.net"
+
+# ── 站点信息（黄页显示）─────────────────────────────────────
+site:
+  title: "我的 NAS"
+  subtitle: "私有服务入口"
+
+# ── 网关监听 ────────────────────────────────────────────────
+# Funnel 会指向这个端口：tailscale funnel --bg 8080
+gateway:
+  listen: ":8080"
+
+# ── 用户管理页 ──────────────────────────────────────────────
+admin:
+  port: 9092
+  # 想只在局域网可访问（更严格）：改成你 NAS 的局域网 IP
+  # bind: "192.168.1.14"
+
+# ── 高级：Authelia 认证端点路径 ─────────────────────────────
+# 一般不用改。
+#   Authelia v4.38 及以后 → /api/authz/forward-auth   （当前默认）
+#   更老的版本           → /api/verify
+# 如果升级 Authelia 后登录突然不工作，先检查这个路径：
+#   docker exec ng-authelia authelia --version
+authelia:
+  auth_endpoint: "/api/authz/forward-auth"
+
+# ── 对外暴露的服务 ──────────────────────────────────────────
+#
+#  每个服务：
+#    id            唯一标识（英文，用于容器名/文件名）
+#    name          显示名称
+#    desc          一句话描述（黄页显示）
+#    icon          emoji 图标（黄页显示）
+#    path          访问路径（必须以 / 开头）
+#    upstream      后端地址，宿主机端口（Caddy 是 host 模式，所以用 127.0.0.1）
+#    strip_prefix  转发时是否去掉 path 前缀（大多数 Web 应用需要 true）
+#    auth          认证策略：required（默认）| bypass（免登录，慎用）
+#    enabled       是否启用
+#
+services:
+
+  # ── 家库（示例，已启用）────────────────────────────────
+  - id: personal-stock
+    name: "家库"
+    desc: "药品与物品库存管理"
+    icon: "💊"
+    path: /personal-stock
+    upstream: http://127.0.0.1:3456
+    strip_prefix: true
+    auth: required
+    enabled: true
+
+  # ── 音乐（示例，默认关闭）──────────────────────────────
+  # 注意：Navidrome 等应用需要在它自己的设置里把 BaseUrl 改成 /music
+  - id: music
+    name: "音乐"
+    desc: "自建音乐库"
+    icon: "🎵"
+    path: /music
+    upstream: http://127.0.0.1:4533
+    strip_prefix: true
+    auth: required
+    enabled: false
+
+  # ── 再要加服务，照抄上面格式即可 ────────────────────────
+  # - id: photos
+  #   name: "相册"
+  #   desc: "家庭照片"
+  #   icon: "📷"
+  #   path: /photos
+  #   upstream: http://127.0.0.1:2342
+  #   strip_prefix: true
+  #   auth: required
+  #   enabled: true

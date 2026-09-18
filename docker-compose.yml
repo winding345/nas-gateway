@@ -1,0 +1,86 @@
+# ══════════════════════════════════════════════════════════════
+#  nas-gateway —— 带登录认证的反向代理网关
+#
+#  说明：
+#   · 全部使用【相对路径】，clone 到任何目录都能直接用
+#   · 需要个性化的值（域名/端口/服务）放在 services.yml，本文件不用改
+#   · 想覆盖默认值：在 .env 里设置 ADMIN_BIND / ADMIN_PORT / TZ
+#
+#  启动：docker compose up -d --build
+# ══════════════════════════════════════════════════════════════
+
+name: nas-gateway
+
+services:
+  # ───────────────────────────────────────────────────────────
+  #  Caddy —— 反向代理 + 路由 + 认证入口
+  #
+  #  必须用 host 网络模式：这样它才能访问宿主机上的
+  #  127.0.0.1:<端口>（即各个业务服务的 Docker 端口映射）
+  # ───────────────────────────────────────────────────────────
+  caddy:
+    image: caddy:2-alpine
+    container_name: ng-caddy
+    network_mode: host
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./caddy/data:/data
+      - ./caddy/config:/config
+      - ./portal:/srv/portal:ro
+      - ./logs/caddy:/var/log/caddy
+    environment:
+      - TZ=${TZ:-Asia/Shanghai}
+    restart: unless-stopped
+
+  # ───────────────────────────────────────────────────────────
+  #  Authelia —— 认证服务（登录页 / 会话 / 用户库）
+  #
+  #  只绑 127.0.0.1：只有 Caddy 能访问，公网和局域网都碰不到
+  # ───────────────────────────────────────────────────────────
+  authelia:
+    image: authelia/authelia:4
+    container_name: ng-authelia
+    # 以宿主用户身份运行：否则会把 authelia/ 目录里的文件写成 root 所有，
+    # 导致宿主机上的 ./scripts/backup.sh、编辑器等读不了。
+    # 想改回 root 就把这行删掉（或设 PUID/PGID=0）。
+    user: "${PUID:-1000}:${PGID:-1000}"
+    volumes:
+      - ./authelia:/config
+    ports:
+      - "127.0.0.1:9091:9091"
+    environment:
+      - TZ=${TZ:-Asia/Shanghai}
+      # 密钥通过文件提供（生成于 scripts/generate-secrets.sh）
+      - AUTHELIA_SESSION_SECRET_FILE=/config/secrets/session_secret
+      - AUTHELIA_STORAGE_ENCRYPTION_KEY_FILE=/config/secrets/storage_encryption_key
+      - AUTHELIA_IDENTITY_VALIDATION_RESET_PASSWORD_JWT_SECRET_FILE=/config/secrets/identity_validation_secret
+    restart: unless-stopped
+
+  # ───────────────────────────────────────────────────────────
+  #  Admin —— 用户管理网页（9092）
+  #
+  #  默认绑 0.0.0.0：局域网可达。
+  #  公网访问不到它，因为：
+  #    · 你家 NAS 没有公网 IP
+  #    · Tailscale Funnel 只暴露你配置的那几个路由，不含 9092
+  #
+  #  想更严格：在 .env 里设 ADMIN_BIND=192.168.1.14
+  # ───────────────────────────────────────────────────────────
+  admin:
+    build:
+      context: ./admin
+    image: nas-gateway-admin:latest
+    container_name: ng-admin
+    user: "${PUID:-1000}:${PGID:-1000}"
+    volumes:
+      - ./admin:/app                 # 代码挂载，改完重启即可
+      - ./:/gateway                  # 读写 services.yml / authelia / caddy / portal
+      - ./logs/admin:/logs
+    ports:
+      - "${ADMIN_BIND:-0.0.0.0}:${ADMIN_PORT:-9092}:9092"
+    environment:
+      - TZ=${TZ:-Asia/Shanghai}
+      - GATEWAY_ROOT=/gateway
+      - ADMIN_DATA_DIR=/app/data
+      - ADMIN_LOG=/logs/activity.log
+    restart: unless-stopped

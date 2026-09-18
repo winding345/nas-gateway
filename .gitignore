@@ -1,0 +1,42 @@
+# ══════════════════════════════════════════════════════════════
+#  nas-gateway .gitignore
+#
+#  原则：凡是「跟你的环境有关」或「含密钥/用户信息」的文件
+#        一律不入库，只提交对应的 .example 模板
+# ══════════════════════════════════════════════════════════════
+
+# ── 本地配置（含你的域名 / 端口 / 服务列表）──────────────────
+services.yml
+.env
+.env.*
+!.env.example
+
+# ── 用户库（含密码哈希）────────────────────────────────────
+authelia/users_database.yml
+
+# ── 密钥（绝对不能入库）───────────────────────────────────
+authelia/secrets/*
+!authelia/secrets/.gitkeep
+
+# ── 运行态数据 ────────────────────────────────────────────
+authelia/db.sqlite3
+authelia/notification.txt
+caddy/data/*
+!caddy/data/.gitkeep
+caddy/config/*
+!caddy/config/.gitkeep
+admin/data/
+logs/
+
+# ── 生成物（由 scripts/apply-config.sh 生成，不入库）────────
+caddy/Caddyfile
+authelia/configuration.yml
+portal/index.html
+
+# ── 通用 ─────────────────────────────────────────────────
+*.log
+*.tmp
+*.swp
+.DS_Store
+__pycache__/
+*.pyc
