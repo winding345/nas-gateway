@@ -68,7 +68,7 @@ docker compose build admin
 echo
 echo "▸ 生成配置"
 docker compose run --rm --no-deps -T admin \
-  python /app/generate_config.py --root /gateway
+  python /app/generate_config.py --root /gateway --sync-env
 
 # ── 5. 启动 ─────────────────────────────────────────────────
 echo

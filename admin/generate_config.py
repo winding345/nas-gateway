@@ -342,10 +342,60 @@ def gen_portal(cfg: dict, services: list[dict]) -> str:
     return PORTAL_TEMPLATE.format(title=title, subtitle=subtitle, cards=cards)
 
 
+def sync_env(root: Path, cfg: dict) -> tuple[str, bool]:
+    """把 services.yml 里的 admin 配置同步到 .env（docker-compose 从这里读）。
+
+    这样 services.yml 就是唯一的配置入口，不用再去改 .env。
+    返回 (摘要, 是否有变化)
+    """
+    admin = cfg.get("admin") or {}
+    want: dict[str, str] = {}
+    if admin.get("port") not in (None, ""):
+        want["ADMIN_PORT"] = str(admin["port"]).strip()
+    if admin.get("bind") not in (None, ""):
+        want["ADMIN_BIND"] = str(admin["bind"]).strip()
+
+    env_path = root / ".env"
+    old_lines = env_path.read_text(encoding="utf-8").splitlines() if env_path.exists() else []
+    old_values = {
+        ln.split("=", 1)[0]: ln.split("=", 1)[1]
+        for ln in old_lines
+        if "=" in ln and not ln.lstrip().startswith("#")
+    }
+
+    changed = any(old_values.get(k) != v for k, v in want.items())
+    if not changed and env_path.exists():
+        return ("\n".join(f"  {k}={v}" for k, v in want.items()), False)
+
+    # 逐行更新；没出现的追加到末尾
+    remaining = dict(want)
+    out: list[str] = []
+    for ln in old_lines:
+        key = ln.split("=", 1)[0] if "=" in ln and not ln.lstrip().startswith("#") else None
+        if key in remaining:
+            out.append(f"{key}={remaining.pop(key)}")
+        else:
+            out.append(ln)
+    if remaining:
+        if out and out[-1].strip():
+            out.append("")
+        out.append("# 由 services.yml 的 admin 段自动同步（改 services.yml 即可）")
+        for k, v in remaining.items():
+            out.append(f"{k}={v}")
+
+    env_path.write_text("\n".join(out) + "\n", encoding="utf-8")
+    return ("\n".join(f"  {k}={v}" for k, v in want.items()), True)
+
+
 # ──────────────────────────────────────────────────────────────
 def main() -> None:
     ap = argparse.ArgumentParser(description="nas-gateway 配置生成器")
     ap.add_argument("--root", default=".", help="项目根目录（含 services.yml）")
+    ap.add_argument(
+        "--sync-env",
+        action="store_true",
+        help="同时把 services.yml 的 admin.port / admin.bind 同步到 .env",
+    )
     args = ap.parse_args()
     root = Path(args.root).resolve()
 
@@ -382,6 +432,15 @@ def main() -> None:
     print(f"   生成 {out_caddy.relative_to(root)}")
     print(f"   生成 {out_auth.relative_to(root)}")
     print(f"   生成 {out_portal.relative_to(root)}")
+
+    if args.sync_env:
+        summary, changed = sync_env(root, cfg)
+        print()
+        print("   同步到 .env：" if changed else "   .env 已是最新：")
+        print(summary)
+        if changed:
+            print("   ⚠️ admin 端口/绑定有变化 → 需要重建 admin 容器")
+            print("      docker compose up -d admin")
 
 
 if __name__ == "__main__":

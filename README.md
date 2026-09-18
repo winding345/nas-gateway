@@ -156,6 +156,27 @@ services:
 > Navidrome / Jellyfin / qBittorrent 等在各自设置里改 Base URL 即可；
 > 家库已经支持（会自动读 `X-Forwarded-Prefix`）。
 
+### 改端口
+
+**所有端口都在 `services.yml` 里改**，然后跑 `./scripts/apply-config.sh`：
+
+```yaml
+gateway:
+  listen: ":18000"       # 网关入口（Funnel 指向这个）
+
+admin:
+  port: 18001            # 管理页
+  bind: "192.168.1.14"   # 可选：只绑这个地址
+```
+
+`apply-config.sh` 会自动：
+1. 把 `admin.port` / `admin.bind` **同步进 `.env`**（docker-compose 从这里读）
+2. 重载 Caddy（`gateway.listen` 变了会跟着变）
+3. 重启 Authelia
+4. **端口变了就重建 admin 容器**
+
+> 记得同步改 Funnel：`tailscale funnel --bg 18000`
+
 ---
 
 ## 用户管理
