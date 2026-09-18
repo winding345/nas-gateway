@@ -165,7 +165,14 @@ def gen_caddyfile(cfg: dict, domain: str, services: list[dict]) -> str:
     a("")
     a("\t# ── Authelia 登录门户（公开，不鉴权）──────────────")
     a("\thandle_path /authelia/* {")
-    a(f"\t\treverse_proxy 127.0.0.1:{AUTHELIA_PORT}")
+    a(f"\t\treverse_proxy 127.0.0.1:{AUTHELIA_PORT} {{")
+    # ⚠️ 这里也必须强制 https！Tailscale Funnel 终止 TLS 后用 http 转发给 Caddy，
+    #    不强制的话 Authelia 会以为自己在 http 上，生成 http:// 的 <base>，
+    #    被自己的 CSP "base-uri 'self'" 拦掉，登录页只显示：
+    #      There was an issue retrieving the current user state
+    #    （前端资源加载不了、拿不到用户状态）
+    a("\t\t\theader_up X-Forwarded-Proto https")
+    a("\t\t}")
     a("\t}")
     a("")
 
