@@ -126,7 +126,6 @@ def validate(cfg: dict) -> tuple[str, list[dict]]:
 # ──────────────────────────────────────────────────────────────
 def gen_caddyfile(cfg: dict, domain: str, services: list[dict]) -> str:
     listen = str((cfg.get("gateway") or {}).get("listen") or ":8080").strip()
-    verify_rd = f"https://{domain}/authelia/"
     # Authelia 的认证端点路径随版本不同：
     #   v4.38+ → /api/authz/forward-auth   （当前默认）
     #   更老的版本 → /api/verify
@@ -164,13 +163,22 @@ def gen_caddyfile(cfg: dict, domain: str, services: list[dict]) -> str:
     a("\t}")
     a("")
     a("\t# ── Authelia 登录门户（公开，不鉴权）──────────────")
-    a("\thandle_path /authelia/* {")
+    # /authelia（不带尾斜杠）不匹配下面的 handle /authelia/*，会掉进兜底路由被要求登录
+    # → 登录后又跳回 /authelia → 死循环。这里补一条 308 跳到带斜杠的规范地址。
+    a("\tredir /authelia /authelia/ 308")
+    # ⚠️ 这里必须用 handle（保留前缀），不能用 handle_path（会剥掉前缀）！
+    #    authelia/base.yml 里把 server.address 配成了 tcp://0.0.0.0:9091/authelia，
+    #    Authelia 只有看到 URI 以 /authelia 开头时才会把登录页的 <base href> 和
+    #    前端路由 basename 设成 /authelia/。一旦被 Caddy 剥掉前缀，<base> 就会变成
+    #    https://<域名>/ ，页面里的 ./static/... 会被解析到 /static/... →
+    #    资源全挂，浏览器报 MIME 错误，页面上只剩
+    #    "There was an issue retrieving the current user state"。
+    #    （另：认证端点仍按文档要求走不带前缀的 /api/authz/*，Authelia 两个路径都监听。）
+    a("\thandle /authelia/* {")
     a(f"\t\treverse_proxy 127.0.0.1:{AUTHELIA_PORT} {{")
     # ⚠️ 这里也必须强制 https！Tailscale Funnel 终止 TLS 后用 http 转发给 Caddy，
     #    不强制的话 Authelia 会以为自己在 http 上，生成 http:// 的 <base>，
-    #    被自己的 CSP "base-uri 'self'" 拦掉，登录页只显示：
-    #      There was an issue retrieving the current user state
-    #    （前端资源加载不了、拿不到用户状态）
+    #    被自己的 CSP "base-uri 'self'" 拦掉。
     a("\t\t\theader_up X-Forwarded-Proto https")
     a("\t\t}")
     a("\t}")
@@ -180,9 +188,14 @@ def gen_caddyfile(cfg: dict, domain: str, services: list[dict]) -> str:
         p = s["path"]
         a(f"\t# ── {s['name']}  ({p}) ──────────────────────")
         a(f"\tredir {p} {p}/ 308")
-        # 用 handle（不剥前缀）：这样 forward_auth 能看到原始路径，
-        # 登录后能跳回用户原本想访问的页面；前缀剥离交给 uri strip_prefix。
         a(f"\thandle {p}* {{")
+        # ⚠️ 这里必须用 route { } 把内部指令包起来，强制它们【按书写顺序】执行。
+        #    不包的话 Caddy 按内置指令顺序排序，uri 排在 forward_auth 之前，
+        #    于是 uri strip_prefix 先跑，forward_auth 交给 Authelia 的就是已经
+        #    剥掉前缀的路径 —— Authelia 据此生成 ?rd=…，用户登录后会被送到
+        #    https://<域名>/ 而不是原本想去的 /<服务>/…（实测就是这样丢的）。
+        #    包上 route 之后 forward_auth 先看到完整路径，?rd= 才正确。
+        a("\t\troute {")
         if s["auth"] == "required":
             # ⚠️ 两个关键点（都踩过坑）：
             #  1. header_up X-Forwarded-Proto https —— Tailscale Funnel 终止 TLS 后用
@@ -192,22 +205,26 @@ def gen_caddyfile(cfg: dict, domain: str, services: list[dict]) -> str:
             #     request_header 在本路由中晚于 forward_auth 执行，会把刚注入的
             #     真实身份又剥掉。copy_headers 本身就会用 Authelia 返回的值
             #     覆盖客户端伪造的同名头（已验证）。
-            a(f"\t\tforward_auth 127.0.0.1:{AUTHELIA_PORT} {{")
-            a("\t\t\theader_up X-Forwarded-Proto https")
-            a(f"\t\t\turi {auth_ep}?rd={verify_rd}")
-            a("\t\t\tcopy_headers Remote-User Remote-Groups Remote-Name Remote-Email")
-            a("\t\t}")
+            #  3. uri 后面【不要】再拼 ?rd=<门户地址>。那是老文档的写法，现代
+            #     Authelia 会忽略它、自己按 X-Forwarded-Uri 算目标地址；写了反而
+            #     容易误导。认证端点也不带 /authelia 前缀（官方要求）。
+            a(f"\t\t\tforward_auth 127.0.0.1:{AUTHELIA_PORT} {{")
+            a("\t\t\t\theader_up X-Forwarded-Proto https")
+            a(f"\t\t\t\turi {auth_ep}")
+            a("\t\t\t\tcopy_headers Remote-User Remote-Groups Remote-Name Remote-Email")
+            a("\t\t\t}")
         else:
             # 免登录路由没有 forward_auth 来覆盖，所以必须显式剥离客户端伪造的内部头
             for h in ("Remote-User", "Remote-Groups", "Remote-Name", "Remote-Email"):
-                a(f"\t\trequest_header -{h}")
+                a(f"\t\t\trequest_header -{h}")
         if s["strip_prefix"]:
-            a(f"\t\turi strip_prefix {p}")
-        a(f"\t\treverse_proxy {s['upstream']} {{")
+            a(f"\t\t\turi strip_prefix {p}")
+        a(f"\t\t\treverse_proxy {s['upstream']} {{")
         # 让后端知道原始请求是 https（Funnel 终止 TLS，Caddy 这段是明文 http）
-        a("\t\t\theader_up X-Forwarded-Proto https")
+        a("\t\t\t\theader_up X-Forwarded-Proto https")
         if s["strip_prefix"]:
-            a(f"\t\t\theader_up X-Forwarded-Prefix {p}")
+            a(f"\t\t\t\theader_up X-Forwarded-Prefix {p}")
+        a("\t\t\t}")
         a("\t\t}")
         a("\t}")
         a("")
@@ -216,7 +233,7 @@ def gen_caddyfile(cfg: dict, domain: str, services: list[dict]) -> str:
     a("\thandle {")
     a(f"\t\tforward_auth 127.0.0.1:{AUTHELIA_PORT} {{")
     a("\t\t\theader_up X-Forwarded-Proto https")
-    a(f"\t\t\turi {auth_ep}?rd={verify_rd}")
+    a(f"\t\t\turi {auth_ep}")
     a("\t\t}")
     a("\t\troot * /srv/portal")
     a("\t\tfile_server")
@@ -233,11 +250,15 @@ def gen_authelia(base: dict, cfg: dict, domain: str, services: list[dict]) -> di
     out = json.loads(json.dumps(base))  # 深拷贝（base 来自 YAML，都是基本类型）
 
     # ── 会话 cookie（需要域名）──
+    # authelia_url 末尾的斜杠【要保留】：Authelia 用它拼重定向地址
+    # （Location: https://<域名>/authelia/?rd=…）。不带斜杠的话浏览器会先落到
+    # /authelia 再被 Caddy 308 跳到 /authelia/，多一跳，而且中间那一步容易
+    # 被误判成"登录页打不开"。
     session = out.setdefault("session", {})
     session["cookies"] = [
         {
             "domain": domain,
-            "authelia_url": f"https://{domain}/authelia",
+            "authelia_url": f"https://{domain}/authelia/",
             "default_redirection_url": f"https://{domain}/",
         }
     ]

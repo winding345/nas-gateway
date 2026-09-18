@@ -283,7 +283,7 @@ docker compose down             # 停止（数据都在宿主机目录，不会�
 
 ## 实现要点（都是实测踩过的坑）
 
-配这个网关时有四个地方特别容易错，这里记下来：
+配这个网关时有六个地方特别容易错，这里记下来：
 
 ### 1. Authelia 的认证端点路径随版本变
 
@@ -345,6 +345,73 @@ user: "${PUID:-1000}:${PGID:-1000}"
 如果文件属主不对，改 `.env` 里的 `PUID`/`PGID`（用 `id -u` / `id -g` 查），然后
 `docker compose up -d`。
 
+### 5. Authelia 挂在子路径 `/authelia/` 下（登录页白屏的元凶）
+
+登录页只显示一行 **"There was an issue retrieving the current user state"**、
+浏览器控制台一堆 MIME / 404 报错 —— 基本都是这里没配对。
+
+**原因**：Authelia 的登录页 HTML 里写的是 `<base href="{{ .BaseURL }}" />`，
+而 `.BaseURL` 只在 **请求 URI 以配置的路径开头** 时才会被赋值
+（`internal/middlewares/strip_path.go`）。配错的话 `<base>` 退化成
+`https://<域名>/`，页面里相对路径的 `./static/js/...` 就被解析到
+`/static/js/...`（而不是 `/authelia/static/js/...`）→ 资源全挂。
+
+**两处必须同时改**，缺一不可：
+
+| 位置 | 正确写法 | 错误写法 |
+|---|---|---|
+| `authelia/base.yml` | `address: 'tcp://0.0.0.0:9091/authelia'` | `'tcp://0.0.0.0:9091'`（没有路径） |
+| `caddy/Caddyfile` | `handle /authelia/*`（**保留**前缀） | `handle_path /authelia/*`（**会剥掉**前缀） |
+
+另外三条配套的：
+
+- 认证端点按[官方要求](https://www.authelia.com/integration/proxies/introduction/#important-notes)
+  走**不带前缀**的 `/api/authz/forward-auth`（Authelia 两个路径都监听，避免一堆坑）。
+- `session.cookies[].authelia_url` 末尾**要有斜杠**（`https://<域名>/authelia/`），
+  否则重定向地址不带斜杠，浏览器会先落到 `/authelia` 再被 308 跳一次。
+- `/authelia`（不带尾斜杠）不匹配 `handle /authelia/*`，会掉进兜底路由被要求登录，
+  登录后又跳回 `/authelia` → 死循环。生成器补了一条
+  `redir /authelia /authelia/ 308`。
+
+验证方法（应看到带前缀的 base）：
+
+```bash
+curl -s https://<你的域名>/authelia/ | grep -o '<base href="[^"]*"'
+# 期望：<base href="https://<你的域名>/authelia/" />
+```
+
+### 6. 服务块里要用 `route { }` 包住，否则登录后跳错页面
+
+Caddy **不按书写顺序执行指令**，而是按内置指令顺序排序，其中 `uri` 排在
+`forward_auth` **前面**。所以这样写：
+
+```
+handle /demo* {
+    forward_auth 127.0.0.1:9091 { ... }
+    uri strip_prefix /demo      # ← 其实先执行了
+    reverse_proxy ...
+}
+```
+
+`uri strip_prefix` 会先跑，`forward_auth` 交给 Authelia 的就是已经剥掉 `/demo` 的路径，
+Authelia 据此生成 `?rd=…`。结果是**登录成功后用户被送到站点根目录，而不是他原本
+想访问的 `/demo/` 页面**（实测：请求 `/demo/sub/page`，`rd` 变成 `/sub/page`）。
+
+用 `route { }` 包起来即可强制按书写顺序执行：
+
+```
+handle /demo* {
+    route {
+        forward_auth 127.0.0.1:9091 { ... }
+        uri strip_prefix /demo
+        reverse_proxy ...
+    }
+}
+```
+
+顺带一提：`uri` 后面**不要**再拼 `?rd=<门户地址>`（老文档的写法），
+现代 Authelia 会忽略它、自己按 `X-Forwarded-Uri` 算目标地址。
+
 ---
 
 ## 排错
@@ -361,7 +428,8 @@ user: "${PUID:-1000}:${PGID:-1000}"
 | 一直跳登录页 | 浏览器是否禁用了 Cookie；域名和时间是否都正确 |
 | 登录后 403 / 一直循环 | `authelia/configuration.yml` 里 `session.cookies[].domain` 是否等于你的域名 |
 | 子路径下页面错乱、资源 404 | 该服务的 base path 没配好（见上面「加一个新服务」的注意） |
-| 登录页样式丢失 | `handle_path /authelia/*` 是否生效；`authelia_url` 是否正确 |
+| 登录页样式丢失 / 只有 "issue retrieving the current user state" | 见上面「实现要点 5」：`authelia/base.yml` 的 `address` 要带 `/authelia`，Caddy 那边必须是 `handle` 而**不是** `handle_path` |
+| 登录成功后跳到首页而不是原本的页面 | 服务块没用 `route { }` 包住 → 见上面「实现要点 6」 |
 | 管理页打不开 | `docker compose ps` 看 ng-admin；`curl http://127.0.0.1:9092/healthz` |
 | 用户创建了但登录不上 | `authelia/users_database.yml` 是否被写入；Authelia 日志 `docker compose logs authelia` |
 

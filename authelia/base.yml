@@ -12,8 +12,17 @@
 theme: 'auto'
 
 # ── 服务监听（只在容器内，对外由 Caddy 转发）────────────────
+# ⚠️ 这里的 /authelia 路径【不能删】！
+#    Authelia 靠配置里的这个路径来决定登录页 <base href> 和前端路由 basename：
+#    只有当一个请求的 URI 以它开头时，内部中间件才会把 BaseURL 设成 /authelia
+#    （见 internal/middlewares/strip_path.go），否则 <base href> 会退化成
+#    https://<域名>/ ，而页面里的资源是相对路径 ./static/...，
+#    浏览器就会去请求 /static/... → 404/400，登录页只剩一行
+#    "There was an issue retrieving the current user state"。
+#    设了这个路径后，Authelia 同时监听 '/' 和 '/authelia'；
+#    Caddy 那边也必须【不要】剥掉前缀（用 handle，不用 handle_path）。
 server:
-  address: 'tcp://0.0.0.0:9091'
+  address: 'tcp://0.0.0.0:9091/authelia'
   endpoints:
     authz:
       forward-auth:
