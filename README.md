@@ -34,6 +34,9 @@
 - **Tailscale Funnel 已可用**（在 Tailscale 管理后台开启 *HTTPS Certificates* 和 *MagicDNS*）
 - 至少一个已在本机端口上跑着的服务（例如家库跑在 `127.0.0.1:3456`）
 
+> 下文出现的 `8080` / `9092` 都是**默认值**，都可以在 `services.yml` 里改
+> （见下面「改端口」）。
+
 ```bash
 # 1. 拉代码（放在任何目录都行，本项目不依赖固定路径）
 git clone <你的仓库地址> nas-gateway

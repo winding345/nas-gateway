@@ -77,11 +77,39 @@ docker compose up -d
 sleep 4
 docker compose ps
 
-# ── 6. 后续步骤 ─────────────────────────────────────────────
+# ── 6. 后续步骤（全部从配置文件读，不写死）───────────────────
 NAS_IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
-ADMIN_PORT="$(grep -E '^\s*ADMIN_PORT=' .env 2>/dev/null | cut -d= -f2 || echo 9092)"
+
+# 管理页端口：优先 .env（apply-config 已从 services.yml 同步过来）
+ADMIN_PORT="$(grep -E '^ADMIN_PORT=' .env 2>/dev/null | cut -d= -f2 | tr -d ' ')"
+if [ -z "$ADMIN_PORT" ]; then
+  ADMIN_PORT="$(grep -A3 -E '^admin:' services.yml | grep -E '^[[:space:]]*port:' | head -1 \
+    | sed 's/.*port:[[:space:]]*//' | tr -d "\"' ")"
+fi
 ADMIN_PORT="${ADMIN_PORT:-9092}"
-DOMAIN="$(grep -E '^domain:' services.yml | sed 's/^domain:[[:space:]]*//; s/["'"'"']//g')"
+
+ADMIN_BIND="$(grep -E '^ADMIN_BIND=' .env 2>/dev/null | cut -d= -f2 | tr -d ' ')"
+case "$ADMIN_BIND" in
+  ""|0.0.0.0) ADMIN_HOST="${NAS_IP:-<你的NAS_IP>}"; ADMIN_SCOPE="局域网可访问" ;;
+  *)          ADMIN_HOST="$ADMIN_BIND";           ADMIN_SCOPE="只绑 $ADMIN_BIND" ;;
+esac
+
+# 网关端口：读 services.yml 的 gateway.listen（去掉冒号）
+GW_PORT="$(grep -A3 -E '^gateway:' services.yml | grep -E '^[[:space:]]*listen:' | head -1 \
+  | sed 's/.*listen:[[:space:]]*//' | tr -d "\"' " | sed 's/^://')"
+GW_PORT="${GW_PORT:-8080}"
+
+# 域名
+DOMAIN="$(grep -E '^domain:' services.yml | sed 's/^domain:[[:space:]]*//; s/["'"'"']//g' | tr -d ' ')"
+
+# Tailscale 容器名（自动找）
+TS_CT="$(docker ps --format '{{.Names}}\t{{.Image}}' 2>/dev/null \
+  | grep -i 'tailscale' | head -1 | cut -f1)"
+if [ -n "$TS_CT" ]; then
+  TS_HINT="docker exec $TS_CT tailscale funnel --bg $GW_PORT"
+else
+  TS_HINT="tailscale funnel --bg $GW_PORT"
+fi
 
 cat <<EOF
 
@@ -89,17 +117,18 @@ cat <<EOF
  部署完成，接下来 3 步
 ════════════════════════════════════════════
 
-1️⃣  设置管理页密码（只能局域网访问）
-     浏览器打开： http://${NAS_IP:-<你的NAS_IP>}:${ADMIN_PORT}/
+1️⃣  设置管理页密码（${ADMIN_SCOPE}）
+     浏览器打开： http://${ADMIN_HOST}:${ADMIN_PORT}/
 
 2️⃣  在管理页创建一个用户（组选 users），这就是你登录服务用的账号
 
-3️⃣  让 Tailscale Funnel 指向网关
-     tailscale funnel --bg 8080
-     （如果 Tailscale 在容器里：docker exec <容器名> tailscale funnel --bg 8080）
+3️⃣  让 Tailscale Funnel 指向网关（网关入口 :${GW_PORT}）
+     ${TS_HINT}
 
 然后访问： https://${DOMAIN}
    会跳转到登录页 → 用第 2 步创建的账号登录 → 进入黄页
+
+以上端口都来自 services.yml，改完跑 ./scripts/apply-config.sh 即可（会自动同步并重建容器）。
 
 EOF
 
